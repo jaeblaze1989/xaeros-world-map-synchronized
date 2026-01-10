@@ -16,7 +16,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import xaero.map.MapProcessor;
 import xaero.map.MapWriter;
 import xaero.map.biome.BlockTintProvider;
-import xaero.map.region.MapUpdateFastConfig;
 import xaero.map.region.OverlayManager;
 
 /**
@@ -43,7 +42,7 @@ public abstract class MapWriterMixin {
             remap = false
     )
     private void onChunkWritten(
-            Level world, Registry<Block> blockRegistry, int distance, boolean onlyLoad, Registry<Biome> biomeRegistry, OverlayManager overlayManager, boolean loadChunks, boolean updateChunks, boolean ignoreHeightmaps, boolean flowers, boolean detailedDebug, BlockPos.MutableBlockPos mutableBlockPos3, BlockTintProvider blockTintProvider, int caveDepth, int caveStart, int layerToWrite, int tileChunkX, int tileChunkZ, int tileChunkLocalX, int tileChunkLocalZ, int chunkX, int chunkZ, MapUpdateFastConfig updateConfig, CallbackInfoReturnable<Boolean> cir) {
+            Level world, Registry<Block> blockRegistry, int distance, boolean onlyLoad, Registry<Biome> biomeRegistry, OverlayManager overlayManager, boolean loadChunks, boolean updateChunks, boolean ignoreHeightmaps, boolean flowers, boolean detailedDebug, BlockPos.MutableBlockPos mutableBlockPos3, BlockTintProvider blockTintProvider, int caveDepth, int caveStart, int layerToWrite, int tileChunkX, int tileChunkZ, int tileChunkLocalX, int tileChunkLocalZ, int chunkX, int chunkZ, CallbackInfoReturnable<Boolean> cir) {
         // Only care about surface layer
         if (layerToWrite != Integer.MAX_VALUE) {
             return;

@@ -66,6 +66,6 @@ side = "BOTH"
 [[dependencies."${mod_id}"]]
 modId = "xaeroworldmap"
 mandatory = true
-versionRange = "[1.40.0,)"
+versionRange = "[1.39.0,)"
 ordering = "AFTER"
 side = "BOTH"

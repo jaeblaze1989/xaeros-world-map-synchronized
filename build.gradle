@@ -72,16 +72,30 @@ mixin {
 sourceSets.main.resources { srcDir 'src/generated/resources' }
 
 repositories {
-    maven {
-        url "https://chocolateminecraft.com/maven"
-        name "Xaero's Maven"
+//    maven {
+//        url "https://chocolateminecraft.com/maven"
+//        name "Xaero's Maven"
+//    }
+
+    exclusiveContent {
+        forRepository {
+            maven {
+                name = "Modrinth"
+                url = "https://api.modrinth.com/maven"
+            }
+        }
+        forRepositories(fg.repository)
+        filter {
+            includeGroup "maven.modrinth"
+        }
     }
 }
 
 dependencies {
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
 
-    implementation "xaero.map:xaeroworldmap-forge-${minecraft_version}:${xaero_world_map_version}:dev"
+//    implementation "xaero.map:xaeroworldmap-forge-${minecraft_version}:${xaero_world_map_version}:dev"
+    implementation fg.deobf("maven.modrinth:xaeros-world-map:${xaero_world_map_version}_Forge_1.20")
 
     annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
 }
