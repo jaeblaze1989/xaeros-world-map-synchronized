@@ -7,6 +7,7 @@ import net.fivew14.xaerosync.common.RateLimiter;
 import net.fivew14.xaerosync.networking.XaeroSyncNetworking;
 import net.fivew14.xaerosync.networking.packets.*;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraftforge.network.PacketDistributor;
 import xaero.map.MapProcessor;
@@ -17,7 +18,7 @@ import xaero.map.region.MapTileChunk;
 import javax.annotation.Nullable;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.PriorityBlockingQueue;
 
 /**
  * Main client-side sync manager.
@@ -50,9 +51,13 @@ public class ClientSyncManager {
     private RateLimiter uploadLimiter;
     private RateLimiter downloadLimiter;
 
-    // Queues
-    private final Queue<ChunkCoord> uploadQueue = new ConcurrentLinkedQueue<>();
-    private final Queue<ChunkCoord> downloadQueue = new ConcurrentLinkedQueue<>();
+    // Queues - priority based on distance to player (closer = higher priority)
+    private final Set<ChunkCoord> uploadQueueSet = ConcurrentHashMap.newKeySet();
+    private final Set<ChunkCoord> downloadQueueSet = ConcurrentHashMap.newKeySet();
+    
+    // Current player chunk position for distance calculations
+    private volatile int playerChunkX = 0;
+    private volatile int playerChunkZ = 0;
 
     // Pending chunks (waiting for data from server)
     private final Set<ChunkCoord> pendingDownloads = Collections.synchronizedSet(new HashSet<>());
@@ -96,8 +101,8 @@ public class ClientSyncManager {
         connected = true;
         registryComplete = false;
         timestampTracker.clearServerTimestamps();
-        uploadQueue.clear();
-        downloadQueue.clear();
+        uploadQueueSet.clear();
+        downloadQueueSet.clear();
         pendingDownloads.clear();
         XaeroSync.LOGGER.debug("Connected to server");
     }
@@ -110,8 +115,8 @@ public class ClientSyncManager {
         syncEnabled = false;
         registryComplete = false;
         timestampTracker.clearServerTimestamps();
-        uploadQueue.clear();
-        downloadQueue.clear();
+        uploadQueueSet.clear();
+        downloadQueueSet.clear();
         pendingDownloads.clear();
         recentlyQueuedChunks.clear();
         XaeroSync.LOGGER.debug("Disconnected from server");
@@ -201,7 +206,7 @@ public class ClientSyncManager {
         if (packet.isLastBatch()) {
             registryComplete = true;
             XaeroSync.LOGGER.info("Registry transfer complete - {} server chunks, download queue: {}",
-                    timestampTracker.getServerCount(), downloadQueue.size());
+                    timestampTracker.getServerCount(), downloadQueueSet.size());
 
             // Check for chunks that need uploading
             if (Config.CLIENT_AUTO_UPLOAD.get()) {
@@ -314,21 +319,19 @@ public class ClientSyncManager {
             manager.recentlyQueuedChunks.put(coord, now);
             manager.queueUpload(coord);
             XaeroSync.LOGGER.debug("Queued chunk {} for upload (queue size: {})",
-                    coord, manager.uploadQueue.size());
+                    coord, manager.uploadQueueSet.size());
         }
     }
 
     // ==================== Queue Management ====================
 
     private void queueUpload(ChunkCoord coord) {
-        if (!uploadQueue.contains(coord)) {
-            uploadQueue.add(coord);
-        }
+        uploadQueueSet.add(coord);
     }
 
     private void queueDownload(ChunkCoord coord) {
-        if (!downloadQueue.contains(coord) && !pendingDownloads.contains(coord)) {
-            downloadQueue.add(coord);
+        if (!pendingDownloads.contains(coord)) {
+            downloadQueueSet.add(coord);
         }
     }
 
@@ -367,33 +370,77 @@ public class ClientSyncManager {
 
         // Periodically re-queue chunks that need uploading but aren't in the queue
         // This handles chunks that failed serialization (e.g., partial chunks) and may be ready now
-        if (registryComplete && Config.CLIENT_AUTO_UPLOAD.get() && uploadQueue.isEmpty()) {
+        if (registryComplete && Config.CLIENT_AUTO_UPLOAD.get() && uploadQueueSet.isEmpty()) {
             if (now - lastRequeueTime > REQUEUE_INTERVAL_MS) {
                 lastRequeueTime = now;
-                int before = uploadQueue.size();
+                int before = uploadQueueSet.size();
                 queuePendingUploads();
-                int added = uploadQueue.size() - before;
+                int added = uploadQueueSet.size() - before;
                 if (added > 0) {
                     XaeroSync.LOGGER.debug("Re-queued {} chunks for upload", added);
                 }
             }
         }
+        
+        // Update player position for distance-based prioritization
+        updatePlayerPosition();
 
-        // Process uploads
-        while (!uploadQueue.isEmpty() && uploadLimiter.tryAcquire()) {
-            ChunkCoord coord = uploadQueue.poll();
+        // Process uploads - pick closest chunk to player
+        while (!uploadQueueSet.isEmpty() && uploadLimiter.tryAcquire()) {
+            ChunkCoord coord = pollClosest(uploadQueueSet);
             if (coord != null) {
                 processUpload(coord);
             }
         }
 
-        // Process download requests
-        while (!downloadQueue.isEmpty() && downloadLimiter.tryAcquire()) {
-            ChunkCoord coord = downloadQueue.poll();
+        // Process download requests - pick closest chunk to player
+        while (!downloadQueueSet.isEmpty() && downloadLimiter.tryAcquire()) {
+            ChunkCoord coord = pollClosest(downloadQueueSet);
             if (coord != null) {
                 requestDownload(coord);
             }
         }
+    }
+    
+    /**
+     * Update the cached player chunk position.
+     */
+    private void updatePlayerPosition() {
+        LocalPlayer player = Minecraft.getInstance().player;
+        if (player != null) {
+            playerChunkX = player.chunkPosition().x;
+            playerChunkZ = player.chunkPosition().z;
+        }
+    }
+    
+    /**
+     * Poll and remove the closest chunk to the player from the set.
+     */
+    @Nullable
+    private ChunkCoord pollClosest(Set<ChunkCoord> set) {
+        if (set.isEmpty()) return null;
+        
+        ChunkCoord closest = null;
+        int closestDistSq = Integer.MAX_VALUE;
+        
+        // Convert player chunk coords to our chunk coords (64-block chunks = 4 MC chunks)
+        int playerSyncChunkX = playerChunkX >> 2;
+        int playerSyncChunkZ = playerChunkZ >> 2;
+        
+        for (ChunkCoord coord : set) {
+            int dx = coord.x() - playerSyncChunkX;
+            int dz = coord.z() - playerSyncChunkZ;
+            int distSq = dx * dx + dz * dz;
+            if (distSq < closestDistSq) {
+                closestDistSq = distSq;
+                closest = coord;
+            }
+        }
+        
+        if (closest != null) {
+            set.remove(closest);
+        }
+        return closest;
     }
 
     private void processUpload(ChunkCoord coord) {
@@ -529,11 +576,11 @@ public class ClientSyncManager {
     }
 
     public int getUploadQueueSize() {
-        return uploadQueue.size();
+        return uploadQueueSet.size();
     }
 
     public int getDownloadQueueSize() {
-        return downloadQueue.size();
+        return downloadQueueSet.size();
     }
 
     public int getPendingDownloadsSize() {
